@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Plus, Flame, RefreshCw } from 'lucide-react';
 import { api } from '../../api.js';
 import { C, FONT, MONO } from '../../constants.js';
@@ -8,16 +8,14 @@ import { useConfirm } from '../../components/ConfirmDialog.jsx';
 import SearchableSelect from '../../components/SearchableSelect.jsx';
 import { useFunnelConfig } from '../../hooks/useFunnelConfig.js';
 import {
-  PageShell, Button, StageBadge, STAGE_META, STAGE_ORDER,
-  Field, inputStyle, Modal, Segmented, LeadsViewToggle, daysSince,
+  PageShell, Button,
+  Field, inputStyle, Modal, LeadsViewToggle, daysSince,
 } from '../academy/shared.jsx';
 import { Shimmer } from '../../components/charts.jsx';
 import ContactProfileModal from './ContactProfileModal.jsx';
 
-const FUNNEL = ['new', 'contacted', 'engaged', 'hot', 'enrolled'];
-
 export default function PipelinePage({ user, navigate, tabs, view = 'board', onChangeView }) {
-  const { sources } = useFunnelConfig();
+  const { sources, stages } = useFunnelConfig();
   const [board, setBoard] = useState(null);
   const [loading, setLoading] = useState(true);
   const [filterBda, setFilterBda] = useState('');
@@ -69,7 +67,7 @@ export default function PipelinePage({ user, navigate, tabs, view = 'board', onC
 
   return (
     <PageShell
-      subtitle="Every active lead by stage. Drag a card to move it — Cold / Lost branches off any stage."
+      subtitle="Every active lead by stage. Drag a card to move it."
       actions={
         <>
           <LeadsViewToggle view={view} onChange={onChangeView} />
@@ -89,32 +87,24 @@ export default function PipelinePage({ user, navigate, tabs, view = 'board', onC
       {tabs}
       {loading ? (
         <div style={{ display: 'flex', gap: 12 }}>
-          {FUNNEL.map(s => <div key={s} style={{ flex: 1 }}><Shimmer height={340} radius={12} /></div>)}
+          {stages.map(s => <div key={s.stageKey} style={{ flex: 1 }}><Shimmer height={340} radius={12} /></div>)}
         </div>
       ) : (
         <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', overflowX: 'auto', paddingBottom: 8 }}>
-          {FUNNEL.map((stage, i) => {
-            const items = (board.columns[stage] || []).filter(filterLead);
-            const m = STAGE_META[stage];
+          {stages.map(m => {
+            const stage = m.stageKey;
+            const items = (board?.columns?.[stage] || []).filter(filterLead);
             return (
               <div key={stage} style={{ flex: '1 0 220px', minWidth: 220 }}>
                 <Column
-                  stage={stage} meta={m} items={items} convPct={conv[stage]}
+                  stage={stage} meta={m} items={items} dashed={!m.isFunnel} convPct={m.isFunnel ? conv[stage] : null}
                   coldAfter={coldAfter} onDrop={moveLead} drag={drag} setDrag={setDrag}
                   onCard={(l) => { selectedRef.current = l.id; setDetail(l); }}
                 />
               </div>
             );
           })}
-          {/* Cold / Lost side lane */}
-          <div style={{ flex: '0 0 220px', minWidth: 220 }}>
-            <Column
-              stage="cold_lost" meta={STAGE_META.cold_lost} dashed
-              items={(board.columns.cold_lost || []).filter(filterLead)}
-              coldAfter={coldAfter} onDrop={moveLead} drag={drag} setDrag={setDrag}
-              onCard={(l) => { selectedRef.current = l.id; setDetail(l); }}
-            />
-          </div>
+
         </div>
       )}
 
@@ -199,7 +189,7 @@ function Avatar({ name }) {
 }
 
 function AddLeadModal({ onClose, onCreated }) {
-  const { sources } = useFunnelConfig();
+  const { sources, stages } = useFunnelConfig();
   const [form, setForm] = useState({ name: '', whatsappNumber: '', email: '', city: '', source: '', goal: '', stage: 'new' });
   const [saving, setSaving] = useState(false);
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target?.value ?? e }));
@@ -223,7 +213,7 @@ function AddLeadModal({ onClose, onCreated }) {
       </div>
       <Field label="Goal"><input style={inputStyle} value={form.goal} onChange={set('goal')} /></Field>
       <Field label="Stage">
-        <SearchableSelect value={form.stage} onChange={v => setForm(f => ({ ...f, stage: v }))} options={STAGE_ORDER.map(s => ({ value: s, label: STAGE_META[s].label }))} />
+        <SearchableSelect value={form.stage} onChange={v => setForm(f => ({ ...f, stage: v }))} options={stages.map(s => ({ value: s.stageKey, label: s.label }))} />
       </Field>
     </Modal>
   );
