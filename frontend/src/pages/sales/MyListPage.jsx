@@ -83,7 +83,7 @@ export default function MyListPage({ user, navigate, subParts = [] }) {
           <div style={{ fontSize: 20, fontWeight: W.heavy, color: C.text, lineHeight: LH.tight }}>Follow-up</div>
           <div style={{ fontSize: T.body, color: C.textSecondary, marginTop: 2 }}>
             {items == null ? 'Loading…' : (
-              <>{items.length} lead{items.length === 1 ? '' : 's'} pinned
+              <>{items.length} lead{items.length === 1 ? '' : 's'} to follow up
                 {counts.overdue > 0 && <> · <b style={{ color: FU_TONE.overdue.fg }}>{counts.overdue} overdue</b></>}
                 {counts.today > 0 && <> · <b style={{ color: FU_TONE.today.fg }}>{counts.today} due today</b></>}
               </>
@@ -188,7 +188,7 @@ function ChatsView({ user, items, selWa, selContact, onOpenChat, onChanged }) {
           />
         ) : (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.textSecondary, fontSize: T.bodyLg, padding: 30, textAlign: 'center' }}>
-            {items?.length ? 'Pick a lead on the left to open the chat.' : 'Your pinned leads’ chats will open here.'}
+            {items?.length ? 'Pick a lead on the left to open the chat.' : 'Your follow-up chats will open here.'}
           </div>
         )}
       </section>
@@ -223,7 +223,7 @@ function EmptyList() {
       <div style={{ width: 46, height: 46, borderRadius: 12, background: C.primaryLight, color: C.primary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}>
         <Pin size={22} />
       </div>
-      <div style={{ fontSize: T.bodyLg, fontWeight: W.bold, color: C.text, marginBottom: 6 }}>No leads pinned yet</div>
+      <div style={{ fontSize: T.bodyLg, fontWeight: W.bold, color: C.text, marginBottom: 6 }}>No follow-ups yet</div>
       Open a chat in <b>Chats</b> and press the <Pin size={13} style={{ verticalAlign: '-2px' }} /> pin in its header, or set a follow-up with <CalendarClock size={13} style={{ verticalAlign: '-2px' }} />. It lands here.
     </div>
   );
@@ -261,10 +261,10 @@ function LeadRow({ i, today, active, onClick, onUnpin }) {
             <span style={{ fontSize: T.label, color: C.textMuted }}>No follow-up set</span>
           )}
           <span style={{ flex: 1 }} />
-          <button onClick={onUnpin} title="Remove from My list" className="mylist-unpin"
+          {i.pinnedAt && <button onClick={onUnpin} title="Unpin chat (scheduled follow-ups stay visible)" className="mylist-unpin"
             style={{ border: 'none', background: 'transparent', color: C.textMuted, cursor: 'pointer', padding: 2, display: 'flex' }}>
             <PinOff size={14} />
-          </button>
+          </button>}
         </div>
       </div>
     </div>

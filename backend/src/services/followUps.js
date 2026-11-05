@@ -320,13 +320,29 @@ async function unpinChat(user, { contactNumber } = {}) {
 /** The signed-in user's pinned chats, with lead data, last message and next follow-up. */
 async function myList(user) {
   if (!user?.id) return [];
+  const params = [user.id];
+  const visible = visibility(user, 'all', params);
   const { rows } = await pool.query(
-    `SELECT p.*, l.id AS lead_id, l.name AS lead_name, l.stage, l.source, l.email, l.city, l.profession,
+    `WITH visible_follow_ups AS (
+       SELECT f.* FROM coexistence.lead_follow_ups f
+        WHERE f.status = 'open' AND ${visible}
+     ), entries AS (
+       SELECT contact_key, wa_number, contact_number, pinned_at, note
+         FROM coexistence.lead_pins WHERE user_id = $1
+       UNION ALL
+       SELECT DISTINCT ON (f.contact_key) f.contact_key, f.wa_number, f.contact_number,
+              NULL::timestamptz, ''::text
+         FROM visible_follow_ups f
+        WHERE NOT EXISTS (SELECT 1 FROM coexistence.lead_pins p
+                           WHERE p.user_id = $1 AND p.contact_key = f.contact_key)
+        ORDER BY contact_key
+     )
+     SELECT p.*, l.id AS lead_id, l.name AS lead_name, l.stage, l.source, l.email, l.city, l.profession,
             l.paid_course, l.created_at AS lead_created_at,
             ct.name AS contact_name, lm.message_body, lm.message_type, lm.direction, lm.timestamp AS last_at,
             li.timestamp AS last_in_at,
             fu.id AS fu_id, to_char(fu.due_date,'YYYY-MM-DD') AS fu_date, to_char(fu.due_time,'HH24:MI') AS fu_time, fu.note AS fu_note
-       FROM coexistence.lead_pins p
+       FROM entries p
        LEFT JOIN LATERAL (SELECT * FROM coexistence.leads WHERE ${KEY10('whatsapp_number')} = p.contact_key LIMIT 1) l ON TRUE
        LEFT JOIN coexistence.contacts ct ON ct.wa_number = p.wa_number AND ct.contact_number = p.contact_number
        LEFT JOIN LATERAL (SELECT message_body, message_type, direction, timestamp FROM coexistence.chat_history
@@ -336,12 +352,10 @@ async function myList(user) {
        LEFT JOIN LATERAL (SELECT timestamp FROM coexistence.chat_history
                            WHERE wa_number = p.wa_number AND contact_number = p.contact_number AND direction = 'incoming'
                            ORDER BY timestamp DESC LIMIT 1) li ON TRUE
-       LEFT JOIN LATERAL (SELECT id, due_date, due_time, note FROM coexistence.lead_follow_ups f
+       LEFT JOIN LATERAL (SELECT id, due_date, due_time, note FROM visible_follow_ups f
                            WHERE f.contact_key = p.contact_key AND f.status = 'open'
-                             AND (f.owner_user_id = p.user_id OR f.owner_user_id IS NULL)
                            ORDER BY f.due_date, f.due_time NULLS LAST LIMIT 1) fu ON TRUE
-      WHERE p.user_id = $1
-      ORDER BY fu.due_date NULLS LAST, lm.timestamp DESC NULLS LAST`, [user.id]);
+      ORDER BY fu.due_date NULLS LAST, lm.timestamp DESC NULLS LAST`, params);
   return rows.map(r => ({
     contactKey: r.contact_key, waNumber: r.wa_number, contactNumber: r.contact_number,
     pinnedAt: r.pinned_at, note: r.note || '',

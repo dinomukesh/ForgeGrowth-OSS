@@ -1118,7 +1118,16 @@ router.put('/leads/:id', async (req, res) => {
     if (!fields.length) return res.status(400).json({ error: 'Nothing to update' });
     fields.push(`updated_at = NOW()`);
     vals.push(id);
-    await pool.query(`UPDATE coexistence.leads SET ${fields.join(', ')} WHERE id = $${i}`, vals);
+    if (b.assignedUserId !== undefined && isAdmin(req)) {
+      await pool.query(`WITH changed AS (
+        UPDATE coexistence.leads SET ${fields.join(', ')} WHERE id = $${i}
+        RETURNING whatsapp_number, assigned_user_id
+      ) UPDATE coexistence.contacts c SET assigned_user_id = l.assigned_user_id, updated_at = NOW()
+        FROM changed l WHERE right(regexp_replace(c.contact_number, '\\D', '', 'g'), 10)
+                           = right(regexp_replace(l.whatsapp_number, '\\D', '', 'g'), 10)`, vals);
+    } else {
+      await pool.query(`UPDATE coexistence.leads SET ${fields.join(', ')} WHERE id = $${i}`, vals);
+    }
     const { rows } = await pool.query(`${SELECT_LEAD} WHERE l.id = $1`, [id]);
     emitLeadChanged({ leadId: id });
     res.json({ lead: leadRow(await withLivePaidTotal(rows[0])) });
@@ -1162,9 +1171,12 @@ router.post('/leads/bulk-assign', async (req, res) => {
     if (!Array.isArray(leadIds) || !leadIds.length) return res.status(400).json({ error: 'leadIds is required' });
     const ids = leadIds.map(x => parseInt(x, 10)).filter(Number.isFinite);
     await pool.query(
-      `UPDATE coexistence.leads
+      `WITH changed AS (UPDATE coexistence.leads
           SET assigned_user_id = $1, assigned_bda = COALESCE($2, assigned_bda), updated_at = NOW()
-        WHERE id = ANY($3::bigint[])`,
+        WHERE id = ANY($3::bigint[]) RETURNING whatsapp_number, assigned_user_id)
+       UPDATE coexistence.contacts c SET assigned_user_id = l.assigned_user_id, updated_at = NOW()
+         FROM changed l WHERE right(regexp_replace(c.contact_number, '\\D', '', 'g'), 10)
+                            = right(regexp_replace(l.whatsapp_number, '\\D', '', 'g'), 10)`,
       [assignedUserId ? parseInt(assignedUserId, 10) : null, assignedBda || null, ids]
     );
     emitLeadChanged({ bulk: true });

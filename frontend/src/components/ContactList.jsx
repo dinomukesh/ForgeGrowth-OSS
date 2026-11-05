@@ -239,7 +239,7 @@ export default function ContactList({ waNumber, width = 380, selectedContact, on
               </div>
             </button>
           );
-        })},
+        })}
 
         {contacts.length === 0 && !loading && (
           <div style={{ padding: 40, textAlign: 'center', color: C.textMuted, fontSize: 15 }}>
@@ -250,3 +250,4 @@ export default function ContactList({ waNumber, width = 380, selectedContact, on
     </div>
   );
 }
+

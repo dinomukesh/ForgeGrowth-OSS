@@ -474,11 +474,16 @@ router.post('/contacts/save', async (req, res) => {
       const cleanAssigned = assignedUserId === null ? null : (assignedUserId ? parseInt(assignedUserId, 10) : undefined);
       if (cleanAssigned !== undefined) {
         await pool.query(`
-          INSERT INTO coexistence.contacts (wa_number, contact_number, name, tags, assigned_user_id, updated_at)
+          WITH saved AS (INSERT INTO coexistence.contacts (wa_number, contact_number, name, tags, assigned_user_id, updated_at)
           VALUES ($1, $2, $3, $4, $5, NOW())
           ON CONFLICT (wa_number, contact_number)
           DO UPDATE SET name = COALESCE(EXCLUDED.name, coexistence.contacts.name), tags = COALESCE((SELECT jsonb_agg(t) FROM jsonb_array_elements(COALESCE(coexistence.contacts.tags,'[]'::jsonb)) t
                         WHERE t->>'category_id' = ANY($6::text[])), '[]'::jsonb) || EXCLUDED.tags, assigned_user_id = EXCLUDED.assigned_user_id, updated_at = NOW()
+         RETURNING contact_number)
+          UPDATE coexistence.leads SET assigned_user_id = $5, updated_at = NOW()
+           WHERE right(regexp_replace(whatsapp_number, '\\D', '', 'g'), 10)
+               = right(regexp_replace($2::text, '\\D', '', 'g'), 10)
+             AND EXISTS (SELECT 1 FROM saved)
         `, [waNumber, contactNumber, cleanName, tagsJson, cleanAssigned, MANAGED_TAG_CATEGORIES]);
       } else {
         await pool.query(`

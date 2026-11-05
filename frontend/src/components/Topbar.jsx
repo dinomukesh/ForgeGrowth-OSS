@@ -183,7 +183,7 @@ export default function Topbar({ user, onLogout, onNavigate, navigate, section, 
         <div style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)' }}>
           {/* ONE accent pill that SLIDES between Social and Sales — never a
               per-item background, which is what makes the selection pop. */}
-          <HeaderSegmented items={SECTIONS} value={section} onChange={onSectionChange} />
+          <HeaderSegmented items={SECTIONS.filter(s => s.id !== 'social' || user?.role === 'admin' || user?.pages?.includes('social'))} value={section} onChange={onSectionChange} />
         </div>
       )}
 
