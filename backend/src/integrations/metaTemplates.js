@@ -54,20 +54,30 @@ async function deleteTemplate(wabaId, accessToken, name) {
  * rejection reason, and category-change history. Used by /templates/sync.
  */
 async function listTemplates(wabaId, accessToken, { fields, limit = 100 } = {}) {
-  const f = fields || 'name,language,status,category,previous_category,quality_score,rejected_reason,id';
-  const url = `https://graph.facebook.com/${META_API_VERSION}/${encodeURIComponent(wabaId)}/message_templates`
-    + `?fields=${encodeURIComponent(f)}&limit=${limit}`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-  const text = await res.text();
-  let parsed = null;
-  try { parsed = JSON.parse(text); } catch {}
-  if (!res.ok) {
-    const err = new Error(`Meta listTemplates ${res.status}: ${parsed?.error?.message || text.slice(0, 200)}`);
-    err.status = res.status;
-    err.metaError = parsed?.error || null;
-    throw err;
-  }
-  return parsed?.data || [];
+  const f = fields || 'name,language,status,category,previous_category,quality_score,rejected_reason,id,components';
+  const base = `https://graph.facebook.com/${META_API_VERSION}/${encodeURIComponent(wabaId)}/message_templates`;
+  const all = [];
+  const seen = new Set();
+  let after;
+  do {
+    const params = new URLSearchParams({ fields: f, limit: String(limit) });
+    if (after) params.set('after', after);
+    const res = await fetch(`${base}?${params}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const parsed = await res.json();
+    if (!res.ok) {
+      const err = new Error(`Meta listTemplates ${res.status}: ${parsed?.error?.message || 'Request failed'}`);
+      err.status = res.status;
+      err.metaError = parsed?.error || null;
+      throw err;
+    }
+    if (!Array.isArray(parsed.data)) throw new Error('Meta returned an invalid template list');
+    all.push(...parsed.data);
+    if (!parsed.paging?.next) break;
+    after = parsed.paging?.cursors?.after;
+    if (!after || seen.has(after)) throw new Error('Meta template pagination did not advance');
+    seen.add(after);
+  } while (after);
+  return all;
 }
 
 /**

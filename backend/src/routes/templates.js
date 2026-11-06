@@ -813,12 +813,17 @@ const { listTemplates: metaListTemplates, listLibraryTemplates, deleteTemplate: 
  */
 async function syncAccountTemplates(account) {
   const remote = await metaListTemplates(account.wabaId, account.accessToken);
-  let updated = 0;
+  let updated = 0, imported = 0;
+  const client = await pool.connect();
+  try {
+  await client.query('BEGIN');
+  // Serialize manual and scheduled refreshes for this account without schema changes.
+  await client.query('SELECT pg_advisory_xact_lock(7241, $1::int)', [account.id]);
   for (const r of remote) {
     const status = (r.status || 'PENDING').toUpperCase();
     const localStatus = status === 'PENDING' ? 'SUBMITTED' : status; // PAUSED, DISABLED, APPROVED, REJECTED pass through
     const qs = typeof r.quality_score === 'object' ? r.quality_score?.score : r.quality_score;
-    const result = await pool.query(
+    const result = await client.query(
       `UPDATE coexistence.message_templates
           SET status = $1,
               quality_score = $2,
@@ -845,8 +850,17 @@ async function syncAccountTemplates(account) {
       ]
     );
     if (result.rowCount > 0) updated++;
+    else {
+      await require('../services/templateImport').importMissing(client, account.id, r, localStatus);
+      imported++;
+    }
   }
-  return { updated, total: remote.length };
+  await client.query('COMMIT');
+  return { updated, imported, total: remote.length };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally { client.release(); }
 }
 
 /**
@@ -892,21 +906,25 @@ async function syncAllAccountTemplates() {
   const { rows: accs } = await pool.query(
     `SELECT * FROM coexistence.whatsapp_accounts WHERE is_active = TRUE`
   );
-  let totalUpdated = 0, totalRemote = 0;
+  let totalUpdated = 0, totalRemote = 0, totalImported = 0;
+  const errors = [];
   for (const r of accs) {
-    const account = await getAccountWithToken(r.id);
-    if (!account?.accessToken) continue;
+    let account;
     try {
+      account = await getAccountWithToken(r.id);
+      if (!account?.accessToken) throw new Error('Account has no access token');
       const result = await syncAccountTemplates(account);
       totalUpdated += result.updated;
+      totalImported += result.imported;
       totalRemote += result.total;
       await markAccountHealth(account.id, 'healthy');
     } catch (err) {
       const { classifyMetaError } = require('../services/accountHealth');
-      await markAccountHealth(account.id, classifyMetaError(err), err.message);
+      await markAccountHealth(r.id, classifyMetaError(err), err.message);
+      errors.push({ accountId: r.id, message: err.message });
     }
   }
-  return { accountsScanned: accs.length, totalUpdated, totalRemote };
+  return { accountsScanned: accs.length, totalUpdated, totalRemote, totalImported, errors };
 }
 
 /**
@@ -916,7 +934,7 @@ async function syncAllAccountTemplates() {
 router.post('/templates/sync-all', async (req, res) => {
   try {
     const result = await syncAllAccountTemplates();
-    res.json({ ok: true, ...result });
+    res.json({ ok: result.errors.length === 0, ...result });
   } catch (err) {
     console.error('[templates] sync-all error:', err.message);
     res.status(500).json({ error: 'Failed to sync templates' });

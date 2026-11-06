@@ -2784,8 +2784,12 @@ export default function TemplateBuilderPage({ subParts = [], navigate }) {
   const handleSyncAll = async () => {
     setSyncingAll(true);
     try {
-      await api.syncAllTemplates();
-      loadTemplates();
+      const result = await api.syncAllTemplates();
+      await loadTemplates();
+      const summary = `${result.totalImported || 0} imported, ${result.totalUpdated || 0} updated.`;
+      notify(result.errors?.length
+        ? `${summary} Sync failed for ${result.errors.length} account(s): ${result.errors.map(e => e.message).join('; ')}`
+        : summary);
     } catch (err) {
       notify(err.message || 'Sync failed');
     } finally {
