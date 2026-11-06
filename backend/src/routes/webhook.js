@@ -20,9 +20,9 @@ const router = Router();
 // message FORWARD (sending → sent → delivered → read), never backward. Meta
 // re-sends and reorders status webhooks, so without this a late 'delivered'
 // (or a duplicate 'sent') would clobber an already-'read' message and the blue
-// double-tick would regress to grey. 'failed' is allowed to overwrite anything
-// up to delivered (a genuine send failure must surface) but not 'read'.
-const STATUS_RANK = { sending: 0, sent: 1, delivered: 2, read: 3, played: 3, failed: 2 };
+// double-tick would regress to grey. Failure beats accepted/sent, but a later
+// delivered/read receipt proves delivery and takes precedence over failure.
+const STATUS_RANK = { sending: 0, sent: 1, delivered: 3, read: 4, played: 4, failed: 2 };
 
 /** Constant-time string compare that tolerates length mismatches. */
 function safeEqual(a, b) {
@@ -184,6 +184,9 @@ router.post('/webhook/whatsapp', async (req, res) => {
     // the Meta-provided test number's WABA. Comma-separated in env so it isn't
     // mistaken for a foreign tenant and dropped.
     for (const w of EXTRA_ALLOWED_WABAS) allowedWabas.add(w);
+    const accountErrors = payloads.flatMap(p => (p.entry || [])
+      .filter(e => allowedWabas.has(String(e.id)))
+      .flatMap(e => (e.changes || []).flatMap(c => c.value?.errors || [])));
     const allRecords = [];
     let rejectedCount = 0;
     for (const r of parsedRecords) {
@@ -201,9 +204,9 @@ router.post('/webhook/whatsapp', async (req, res) => {
       // Acknowledge non-message webhooks (e.g. verification, errors) — or a
       // payload entirely from unregistered WABAs (all records dropped).
       await logWebhookProcessed(auditId, {
-        status: 'processed',
+        status: accountErrors.length ? 'error' : 'processed',
         recordsExtracted: 0,
-        error: rejectedCount > 0 ? `skipped ${rejectedCount} record(s) from unregistered WABA` : null,
+        error: accountErrors.length ? JSON.stringify(accountErrors).slice(0, 4000) : rejectedCount > 0 ? `skipped ${rejectedCount} record(s) from unregistered WABA` : null,
         processingMs: Date.now() - startTime,
       });
       return res.status(200).json({ ok: true, stored: 0, skipped: rejectedCount });
@@ -256,14 +259,16 @@ router.post('/webhook/whatsapp', async (req, res) => {
             `UPDATE coexistence.chat_history
                 SET status = $1,
                     error_message = CASE WHEN $1 = 'failed' AND $4::text IS NOT NULL
-                                         THEN $4 ELSE error_message END
+                                         THEN $4 WHEN $1 IN ('delivered','read','played') THEN NULL ELSE error_message END,
+                    raw_payload = jsonb_set(COALESCE(raw_payload, '{}'::jsonb), '{delivery_receipt}', $5::jsonb)
               WHERE message_id = $2
                 AND $3 > (CASE status
-                            WHEN 'sending' THEN 0 WHEN 'sent' THEN 1 WHEN 'delivered' THEN 2
-                            WHEN 'read' THEN 3 WHEN 'played' THEN 3 WHEN 'failed' THEN 2 ELSE 0 END)
+                            WHEN 'sending' THEN 0 WHEN 'sent' THEN 1 WHEN 'delivered' THEN 3
+                            WHEN 'read' THEN 4 WHEN 'played' THEN 4 WHEN 'failed' THEN 2 ELSE 0 END)
               RETURNING wa_number, contact_number, message_id`,
-            [r.status, targetMessageId, newRank, failedError]
+            [r.status, targetMessageId, newRank, failedError, JSON.stringify({ status: r.status, timestamp: r.timestamp, errors: r.errors || [] })]
           );
+          await require('../services/broadcastDelivery').syncBroadcastReceipt(client, targetMessageId);
           if (upd.rowCount > 0) {
             const row = upd.rows[0];
             statusUpdates.push({ waNumber: row.wa_number, contactNumber: row.contact_number, messageId: row.message_id, status: r.status });
@@ -339,7 +344,11 @@ router.post('/webhook/whatsapp', async (req, res) => {
     }
 
     // Push delivery/read tick updates to any open chat (real-time, post-commit).
-    for (const u of statusUpdates) bus.emit('message-status', u);
+    for (const u of statusUpdates) {
+      bus.emit('message-status', u);
+      if (u.status === 'failed') require('../queue/sendQueue').retryDeliveryReceipt(u.messageId)
+        .catch(e => console.error('[webhook] delivery retry scheduling failed:', e.message));
+    }
 
     // Message costs: persist the `pricing` object Meta attaches to every status
     // receipt. It was previously parsed and discarded — status records never

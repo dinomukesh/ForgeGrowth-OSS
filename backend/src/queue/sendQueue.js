@@ -17,6 +17,9 @@ const QUEUE_NAME = 'forgecrm-send';
 // human chat replies and broadcasts — automation/agent sends are excluded so an
 // automation's own outbound message can never re-trigger it (loop-safe default).
 const OUTBOUND_TRIGGER_ORIGINS = new Set(['chat_reply', 'broadcast_log']);
+const deliveryControl = require('./deliveryControl');
+const { syncBroadcastReceipt } = require('../services/broadcastDelivery');
+const BROADCAST_GAP_MS = Math.max(1000, Number(process.env.BROADCAST_GAP_MS) || 1000);
 const CONCURRENCY = parseInt(process.env.SEND_QUEUE_CONCURRENCY || '5', 10);
 const RATE_MAX = parseInt(process.env.SEND_RATE_MAX || '60', 10);
 const RATE_DURATION_MS = parseInt(process.env.SEND_RATE_DURATION_MS || '1000', 10);
@@ -91,6 +94,11 @@ async function processJob(job, token) {
       }
     }
   }
+  if (job.data.retryOf) {
+    if (process.env.BROADCAST_DELIVERY_RETRIES === 'false') return { skipped: true };
+    const { rows } = await pool.query('SELECT status,error_message FROM coexistence.chat_history WHERE message_id=$1', [job.data.retryOf]);
+    if (rows[0]?.status !== 'failed' || !String(rows[0].error_message || '').startsWith('[130429]')) return { skipped: true };
+  }
   const account = await getAccountWithToken(accountId);
   if (!account) throw new Error(`Account id=${accountId} not found`);
   if (!account.accessToken) throw new Error('Access token missing');
@@ -101,6 +109,12 @@ async function processJob(job, token) {
     phoneNumberId: account.phoneNumberId,
     to,
   };
+
+  const waitMs = await deliveryControl.reserve(connection, accountId, originRef?.kind === 'broadcast_log' ? BROADCAST_GAP_MS : 0);
+  if (waitMs > 0) {
+    await job.moveToDelayed(Date.now() + waitMs, token);
+    throw new DelayedError();
+  }
 
   let result;
   try {
@@ -123,6 +137,7 @@ async function processJob(job, token) {
     }
     await markAccountHealth(account.id, 'healthy');
   } catch (err) {
+    if (Number(err.metaError?.code) === 130429) await deliveryControl.coolDown(connection, accountId);
     const cls = classifyMetaError(err);
     await markAccountHealth(account.id, cls, err.message);
     // Don't retry auth failures — they'll fail every time until token is fixed
@@ -143,11 +158,17 @@ async function processJob(job, token) {
   if (originRef?.kind === 'broadcast_log' && originRef.id) {
     await pool.query(
       `UPDATE coexistence.broadcast_logs
-          SET status = 'sent', wa_message_id = $1, sent_at = NOW()
+          SET status = 'sent', error_message = NULL, wa_message_id = $1, sent_at = NOW()
         WHERE id = $2`,
       [wamid, originRef.id]
     ).catch(err => console.error('[sendQueue] broadcast_log update failed:', err.message));
   }
+  // A bookkeeping failure must never retry a request already accepted by Meta.
+  try {
+    await syncBroadcastReceipt(pool, wamid);
+    await deliveryControl.remember(connection, wamid, job.data);
+    await retryDeliveryReceipt(wamid);
+  } catch (err) { console.error('[sendQueue] receipt bookkeeping failed:', err.message); }
   if (originRef?.kind === 'automation_step' && originRef.id) {
     await pool.query(
       `UPDATE coexistence.automation_execution_steps
@@ -168,7 +189,7 @@ async function processJob(job, token) {
   if (wamid && kind !== 'reaction') {
     try {
       const { evaluateOutboundTriggers, markOutboundHandled } = require('../engine/automationEngine');
-      if (OUTBOUND_TRIGGER_ORIGINS.has(originRef?.kind)) {
+      if (!job.data.retryOf && OUTBOUND_TRIGGER_ORIGINS.has(originRef?.kind)) {
         const { rows } = await pool.query(
           `SELECT message_id, wa_number, contact_number, message_body, message_type, timestamp, phone_number_id
              FROM coexistence.chat_history WHERE message_id = $1`,
@@ -227,7 +248,7 @@ function startSendWorker() {
 async function enqueueSend(jobData, opts = {}) {
   const idKey = jobData.localMessageId || `${jobData.accountId}-${jobData.to}-${Date.now()}`;
   const addOpts = {
-    jobId: `send-${idKey}`,
+    jobId: opts.jobId || `send-${idKey}`,
     attempts: ATTEMPTS,
     backoff: { type: 'exponential', delay: 1500 },
     removeOnComplete: { count: 500, age: 3600 },
@@ -238,6 +259,11 @@ async function enqueueSend(jobData, opts = {}) {
   // worker picks it up — non-blocking, no scheduler needed.
   if (opts.delayMs && opts.delayMs > 0) addOpts.delay = Math.round(opts.delayMs);
   await sendQueue.add('send', jobData, addOpts);
+}
+
+async function retryDeliveryReceipt(wamid) {
+  if (process.env.BROADCAST_DELIVERY_RETRIES === 'false') return false;
+  return deliveryControl.retryReceipt({ redis: connection, db: pool, enqueue: enqueueSend, wamid });
 }
 
 async function shutdownSendQueue() {
@@ -251,4 +277,4 @@ async function shutdownSendQueue() {
   }
 }
 
-module.exports = { sendQueue, startSendWorker, enqueueSend, shutdownSendQueue };
+module.exports = { retryDeliveryReceipt, sendQueue, startSendWorker, enqueueSend, shutdownSendQueue };

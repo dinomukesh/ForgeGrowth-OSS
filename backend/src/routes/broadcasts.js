@@ -366,7 +366,14 @@ async function getBroadcastWithLogs(id) {
   logs.push(...testLogs);
   logs.sort((a, b) => new Date(b.sent_at || 0) - new Date(a.sent_at || 0));
 
-  return { ...bRows[0], logs, statusRollup: rollup[0] || {} };
+  const totals = rollup[0] || {};
+  let status = bRows[0].status;
+  if (!['DRAFT', 'SCHEDULED'].includes(status) && totals.total > 0) {
+    status = totals.pending > 0 ? 'SENDING'
+      : totals.failed === totals.total ? 'FAILED'
+      : totals.failed > 0 ? 'PARTIAL' : 'SENT';
+  }
+  return { ...bRows[0], status, logs, statusRollup: totals };
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
